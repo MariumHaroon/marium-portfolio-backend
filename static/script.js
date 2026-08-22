@@ -52,7 +52,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 });
 
-const BACKEND_API_URL = "https://marium-portfolio-backend.vercel.app/";
+// FIXED: Exact AI Endpoint Target
+const BACKEND_API_URL = "/handle-message";
 
 function toggleChat() {
   const windowEl = document.getElementById("ai-chat-window");
@@ -119,7 +120,7 @@ async function sendChatMessage() {
     const errorMsgDiv = document.createElement("div");
     errorMsgDiv.className = "ai-message ai-bot";
     errorMsgDiv.style.color = "#f87171";
-    errorMsgDiv.textContent = "Connection lost. Please check server terminal.";
+    errorMsgDiv.textContent = "Connection lost. Please check server connection.";
     messagesEl.appendChild(errorMsgDiv);
   }
 
