@@ -205,7 +205,7 @@ def handle_message(request: UserInquiry):
     models_to_try = [
         "llama-3.1-8b-instant",
         "llama-3.3-70b-versatile",
-        "mixtral-8x7b-32768"
+        "llama3-8b-8192"
     ]
     for model_name in models_to_try:
         try:
