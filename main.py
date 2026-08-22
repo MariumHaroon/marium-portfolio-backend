@@ -5,34 +5,18 @@ from datetime import datetime
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from groq import Groq
 from twilio.rest import Client as TwilioClient
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-
-app = FastAPI()
-# Mount Static Files Folder
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
-# Root route serves HTML
-@app.get("/", response_class=HTMLResponse)
-async def serve_frontend():
-    with open("static/index.html", "r") as f:
-        return f.read()
-
-# Aapke existing AI Chat routes niche jaise hain waise hi rahenge
-@app.post("/api/chat")
-async def chat_ai(data: dict):
-    # logic...
-    return {"reply": "AI Response"}
-
 
 load_dotenv()
 
+# --- APP INITIALIZATION (Single Instance) ---
 app = FastAPI(title="Marium Portfolio AI Agent")
 
+# CORS Setup
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,11 +25,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- STATIC FILES & FRONTEND ROUTING ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.get("/")
+async def serve_frontend():
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"error": "index.html not found in static folder"}
+
+
+# --- GROQ CLIENT SETUP ---
 groq_key = os.getenv("GROQ_API_KEY")
 if not groq_key:
-    raise RuntimeError("GROQ_API_KEY is missing in .env file")
+    print("⚠️ GROQ_API_KEY is missing in .env file")
 
-client = Groq(api_key=groq_key)
+client = Groq(api_key=groq_key) if groq_key else None
 
 
 # --- 1. EMAIL HELPER ---
@@ -70,7 +70,7 @@ def send_email_notification(subject: str, body: str):
         print(f"❌ Email notification failed: {e}")
 
 
-# --- 2. WHATSAPP HELPER (SINGLE CLEAN FUNCTION) ---
+# --- 2. WHATSAPP HELPER ---
 def send_whatsapp_notification(text: str):
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -81,13 +81,11 @@ def send_whatsapp_notification(text: str):
         print("⚠️ Twilio credentials missing in .env")
         return
 
-    # Clean whitespace & quotes
     account_sid = account_sid.strip().strip('"').strip("'")
     auth_token = auth_token.strip().strip('"').strip("'")
     from_whatsapp = from_whatsapp.strip()
     to_whatsapp = to_whatsapp.strip()
 
-    # Format numbers
     if not from_whatsapp.startswith("whatsapp:"):
         from_whatsapp = f"whatsapp:{from_whatsapp}"
     if not to_whatsapp.startswith("whatsapp:"):
@@ -95,8 +93,6 @@ def send_whatsapp_notification(text: str):
 
     try:
         twilio_client = TwilioClient(account_sid, auth_token)
-        
-        # Split text into safe chunks of 1200 chars
         chunks = [text[i:i+1200] for i in range(0, len(text), 1200)]
         for chunk in chunks:
             message = twilio_client.messages.create(
@@ -145,19 +141,16 @@ def log_full_session(data: ChatSessionLog):
 
     time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     
-    # Save local copy safely
     try:
         with open("full_chat_history.txt", "a", encoding="utf-8") as f:
             f.write(f"\n--- SESSION [{time_str}] ---\n{formatted_chat}{'-'*40}\n")
     except Exception as e:
         print(f"File write skipped: {e}")
 
-    # Send Email
     subject = f"💬 Full Chat Transcript [{time_str}]"
     body = f"Hello Marium,\n\nHere is a complete chat transcript from your portfolio visitor:\n\n--- CHAT TRANSCRIPT ---\n\n{formatted_chat}"
     send_email_notification(subject, body)
 
-    # Send WhatsApp
     whatsapp_body = f"💬 *Full Chat Transcript [{time_str}]*\n\n{formatted_chat}"
     send_whatsapp_notification(whatsapp_body)
 
@@ -200,12 +193,20 @@ def handle_message(request: UserInquiry):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message empty")
 
+    if not client:
+        return {"reply": "Groq API client is not configured correctly."}
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{request.user_name}: {request.message}"}
     ]
 
-    models_to_try = ["qwen/qwen3.6-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    # Valid Groq AI Models
+    models_to_try = [
+        "llama-3.3-70b-versatile",
+        "llama3-70b-8192",
+        "llama3-8b-8192"
+    ]
 
     for model_name in models_to_try:
         try:
@@ -230,7 +231,8 @@ def handle_message(request: UserInquiry):
                 return {"reply": "Thank you! I have logged your details and notified Marium via Email and WhatsApp. She will reach out soon!"}
 
             return {"reply": response_message.content}
-        except Exception:
+        except Exception as e:
+            print(f"Error with model {model_name}: {e}")
             continue
 
     return {"reply": "Server busy, please try again."}
