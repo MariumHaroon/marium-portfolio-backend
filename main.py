@@ -201,13 +201,12 @@ def handle_message(request: UserInquiry):
         {"role": "user", "content": f"{request.user_name}: {request.message}"}
     ]
 
-    # Valid Groq AI Models
+    # Active & Stable Groq Models
     models_to_try = [
+        "llama-3.1-8b-instant",
         "llama-3.3-70b-versatile",
-        "llama3-70b-8192",
-        "llama3-8b-8192"
+        "mixtral-8x7b-32768"
     ]
-
     for model_name in models_to_try:
         try:
             response = client.chat.completions.create(
