@@ -2,21 +2,35 @@ import os
 import json
 import smtplib
 from datetime import datetime
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from groq import Groq
 from twilio.rest import Client as TwilioClient
 
+
+# =========================================================
+# ENVIRONMENT
+# =========================================================
+
 load_dotenv()
 
-# --- APP INITIALIZATION (Single Instance) ---
+
+# =========================================================
+# FASTAPI APP
+# =========================================================
+
 app = FastAPI(title="Marium Portfolio AI Agent")
 
-# CORS Setup
+
+# =========================================================
+# CORS
+# =========================================================
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,30 +39,99 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- STATIC FILES & FRONTEND ROUTING ---
+
+# =========================================================
+# STATIC FILES
+# =========================================================
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-@app.get("/")
+
+# =========================================================
+# GROQ CLIENT SETUP
+# =========================================================
+
+def get_groq_client():
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        return None
+    return Groq(api_key=groq_key)
+
+
+# =========================================================
+# GROQ MODELS
+# =========================================================
+
+# Active & Valid Groq Models
+PREFERRED_MODELS = [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "llama3-8b-8192"
+]
+
+
+def get_available_models(client):
+    try:
+        model_list = client.models.list()
+        available_ids = {
+            model.id
+            for model in model_list.data
+            if getattr(model, "active", True)
+        }
+
+        models = [
+            model
+            for model in PREFERRED_MODELS
+            if model in available_ids
+        ]
+
+        if not models:
+            models = PREFERRED_MODELS
+
+        return models
+
+    except Exception as e:
+        print(f"⚠️ Could not fetch Groq models: {e}")
+        return PREFERRED_MODELS
+
+
+# =========================================================
+# ROOT ROUTE
+# =========================================================
+
+@app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"error": "index.html not found in static folder"}
+    try:
+        index_path = os.path.join(STATIC_DIR, "index.html")
+        with open(index_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail="static/index.html not found"
+        )
 
 
-# --- GROQ CLIENT SETUP ---
-groq_key = os.getenv("GROQ_API_KEY")
-if not groq_key:
-    print("⚠️ GROQ_API_KEY is missing in .env file")
+# =========================================================
+# OPTIONAL /api/chat ROUTE
+# =========================================================
 
-client = Groq(api_key=groq_key) if groq_key else None
+@app.post("/api/chat")
+async def chat_ai(data: dict):
+    message = data.get("message", "")
+    if not message.strip():
+        raise HTTPException(status_code=400, detail="Message empty")
+    return {"reply": "Please use the /handle-message endpoint."}
 
 
-# --- 1. EMAIL HELPER ---
+# =========================================================
+# 1. EMAIL HELPER
+# =========================================================
+
 def send_email_notification(subject: str, body: str):
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
@@ -63,14 +146,17 @@ def send_email_notification(subject: str, body: str):
         server = smtplib.SMTP("smtp.gmail.com", 587)
         server.starttls()
         server.login(sender_email, sender_password)
-        server.sendmail(sender_email, receiver_email, msg.encode('utf-8'))
+        server.sendmail(sender_email, receiver_email, msg.encode("utf-8"))
         server.quit()
         print("✅ Email notification sent successfully!")
     except Exception as e:
         print(f"❌ Email notification failed: {e}")
 
 
-# --- 2. WHATSAPP HELPER ---
+# =========================================================
+# 2. WHATSAPP HELPER
+# =========================================================
+
 def send_whatsapp_notification(text: str):
     account_sid = os.getenv("TWILIO_ACCOUNT_SID")
     auth_token = os.getenv("TWILIO_AUTH_TOKEN")
@@ -88,12 +174,14 @@ def send_whatsapp_notification(text: str):
 
     if not from_whatsapp.startswith("whatsapp:"):
         from_whatsapp = f"whatsapp:{from_whatsapp}"
+
     if not to_whatsapp.startswith("whatsapp:"):
         to_whatsapp = f"whatsapp:{to_whatsapp}"
 
     try:
         twilio_client = TwilioClient(account_sid, auth_token)
-        chunks = [text[i:i+1200] for i in range(0, len(text), 1200)]
+        chunks = [text[i:i + 1200] for i in range(0, len(text), 1200)]
+
         for chunk in chunks:
             message = twilio_client.messages.create(
                 body=chunk,
@@ -101,33 +189,59 @@ def send_whatsapp_notification(text: str):
                 to=to_whatsapp
             )
             print(f"✅ WhatsApp notification sent! SID: {message.sid}")
+
     except Exception as e:
         print(f"❌ WhatsApp failed: {e}")
 
 
-# --- 3. LEAD LOGGING HELPER ---
-def log_conversation_lead(visitor_name: str, inquiry_summary: str, contact_info: str = "Not provided"):
-    time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+# =========================================================
+# 3. LEAD LOGGING HELPER
+# =========================================================
+
+def log_conversation_lead(
+    visitor_name: str,
+    inquiry_summary: str,
+    contact_info: str = "Not provided"
+):
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     entry = f"[{time_str}] Name: {visitor_name} | Contact: {contact_info} | Summary: {inquiry_summary}\n"
-    
+
     try:
         with open("my_inquiries_log.txt", "a", encoding="utf-8") as f:
             f.write(entry)
     except Exception as e:
         print(f"File log skipped: {e}")
-    
+
     subject = f"🚨 New Client Lead: {visitor_name}"
-    body = f"Hello Marium,\n\nA new client left details on your portfolio:\n\nName: {visitor_name}\nContact: {contact_info}\nSummary: {inquiry_summary}"
-    
+    body = (
+        f"Hello Marium,\n\n"
+        f"A new client left details on your portfolio:\n\n"
+        f"Name: {visitor_name}\n"
+        f"Contact: {contact_info}\n"
+        f"Summary: {inquiry_summary}"
+    )
+
     send_email_notification(subject, body)
-    send_whatsapp_notification(f"🚨 *New Client Lead*\n\n*Name:* {visitor_name}\n*Contact:* {contact_info}\n*Summary:* {inquiry_summary}")
+
+    whatsapp_body = (
+        "🚨 *New Client Lead*\n\n"
+        f"*Name:* {visitor_name}\n"
+        f"*Contact:* {contact_info}\n"
+        f"*Summary:* {inquiry_summary}"
+    )
+
+    send_whatsapp_notification(whatsapp_body)
     return "Lead logged."
 
 
-# --- 4. FULL SESSION ROUTE ---
+# =========================================================
+# 4. FULL SESSION LOG
+# =========================================================
+
 class ChatSessionLog(BaseModel):
     user_name: str = "Visitor"
     chat_history: list
+
 
 @app.post("/log-full-session")
 def log_full_session(data: ChatSessionLog):
@@ -139,11 +253,11 @@ def log_full_session(data: ChatSessionLog):
         role = "👤 Visitor" if msg.get("sender") == "user" else "🤖 AI Agent"
         formatted_chat += f"{role}: {msg.get('text')}\n"
 
-    time_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    
+    time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
     try:
         with open("full_chat_history.txt", "a", encoding="utf-8") as f:
-            f.write(f"\n--- SESSION [{time_str}] ---\n{formatted_chat}{'-'*40}\n")
+            f.write(f"\n--- SESSION [{time_str}] ---\n{formatted_chat}{'-' * 40}\n")
     except Exception as e:
         print(f"File write skipped: {e}")
 
@@ -157,7 +271,10 @@ def log_full_session(data: ChatSessionLog):
     return {"status": "success"}
 
 
-# --- 5. AI AGENT TOOL & ROUTE ---
+# =========================================================
+# 5. AI AGENT TOOL
+# =========================================================
+
 tools = [
     {
         "type": "function",
@@ -177,36 +294,73 @@ tools = [
     }
 ]
 
+
+# =========================================================
+# SYSTEM PROMPT
+# =========================================================
+
 SYSTEM_PROMPT = """
 You are 'Marium's AI Representative', representing Marium, an expert Full-Stack Developer specializing in MERN stack and Laravel.
-NEVER identify yourself as OpenAI, Groq, Llama, Meta, or Gemini. Always identify as Marium's AI Representative.
-Greet visitors politely, explain Marium's web/app development services, and gather their Name, Contact Info (Email/WhatsApp), and Project Details.
-When they share their details, ALWAYS invoke the `log_conversation_lead` tool immediately.
+NEVER identify yourself as OpenAI, Groq, Llama, Meta, Gemini, or any other AI model.
+Always identify yourself as Marium's AI Representative.
+Greet visitors politely.
+Explain Marium's web and app development services clearly and professionally.
+Services can include:
+- MERN Stack Development
+- React Development
+- Next.js Development
+- Laravel / PHP Development
+- Frontend Development
+- Backend Development
+- Full-Stack Web Applications
+- Website Development
+- Bug Fixing
+- Website Improvements
+- Responsive Web Design
+
+Your main objective is to understand the visitor's project requirements and convert genuine visitors into leads.
+Try to collect:
+1. Visitor Name
+2. Contact Information (Email or WhatsApp)
+3. Project Details / Requirements
+
+IMPORTANT:
+When the visitor has provided enough information to identify them as a potential client, ALWAYS invoke the `log_conversation_lead` tool immediately.
+Do not tell the visitor that you are using a tool.
+After successful lead logging, tell them that their details have been received and Marium will contact them.
+Be concise, professional and natural.
 """
+
+
+# =========================================================
+# REQUEST MODEL
+# =========================================================
 
 class UserInquiry(BaseModel):
     user_name: str = "Visitor"
     message: str
+
+
+# =========================================================
+# MAIN AI ROUTE
+# =========================================================
 
 @app.post("/handle-message")
 def handle_message(request: UserInquiry):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message empty")
 
+    client = get_groq_client()
     if not client:
-        return {"reply": "Groq API client is not configured correctly."}
+        return {"reply": "GROQ_API_KEY is missing in Vercel Environment Variables."}
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{request.user_name}: {request.message}"}
     ]
 
-    # Active & Stable Groq Models
-    models_to_try = [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "llama3-8b-8192"
-    ]
+    models_to_try = get_available_models(client)
+
     for model_name in models_to_try:
         try:
             response = client.chat.completions.create(
@@ -216,6 +370,7 @@ def handle_message(request: UserInquiry):
                 tool_choice="auto",
                 temperature=0.3
             )
+
             response_message = response.choices[0].message
 
             if response_message.tool_calls:
@@ -227,11 +382,32 @@ def handle_message(request: UserInquiry):
                             inquiry_summary=args.get("inquiry_summary", "No summary provided"),
                             contact_info=args.get("contact_info", "Not provided")
                         )
-                return {"reply": "Thank you! I have logged your details and notified Marium via Email and WhatsApp. She will reach out soon!"}
+                return {
+                    "reply": "Thank you! I have logged your details and notified Marium via Email and WhatsApp. She will reach out soon!"
+                }
 
-            return {"reply": response_message.content}
+            return {
+                "reply": response_message.content or "Please tell me more about your project."
+            }
+
         except Exception as e:
-            print(f"Error with model {model_name}: {e}")
+            print(f"❌ Model failed ({model_name}): {e}")
             continue
 
     return {"reply": "Server busy, please try again."}
+
+
+# =========================================================
+# OPTIONAL: VIEW GROQ MODELS
+# =========================================================
+
+@app.get("/api/models")
+def list_groq_models():
+    client = get_groq_client()
+    if not client:
+        return {"error": "GROQ_API_KEY missing"}
+    try:
+        models = get_available_models(client)
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
