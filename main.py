@@ -41,7 +41,7 @@ app.add_middleware(
 
 
 # =========================================================
-# STATIC FILES
+# STATIC FILES SETUP
 # =========================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,40 +63,13 @@ def get_groq_client():
 
 
 # =========================================================
-# GROQ MODELS
+# GROQ MODELS SETUP (STABLE & DIRECT)
 # =========================================================
 
-# Active & Valid Groq Models
 PREFERRED_MODELS = [
-    "llama-3.1-8b-instant",
     "llama-3.3-70b-versatile",
-    "llama3-8b-8192"
+    "llama-3.1-8b-instant"
 ]
-
-
-def get_available_models(client):
-    try:
-        model_list = client.models.list()
-        available_ids = {
-            model.id
-            for model in model_list.data
-            if getattr(model, "active", True)
-        }
-
-        models = [
-            model
-            for model in PREFERRED_MODELS
-            if model in available_ids
-        ]
-
-        if not models:
-            models = PREFERRED_MODELS
-
-        return models
-
-    except Exception as e:
-        print(f"⚠️ Could not fetch Groq models: {e}")
-        return PREFERRED_MODELS
 
 
 # =========================================================
@@ -352,16 +325,14 @@ def handle_message(request: UserInquiry):
 
     client = get_groq_client()
     if not client:
-        return {"reply": "GROQ_API_KEY is missing in Vercel Environment Variables."}
+        return {"reply": "GROQ_API_KEY is missing in Environment Variables."}
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{request.user_name}: {request.message}"}
     ]
 
-    models_to_try = get_available_models(client)
-
-    for model_name in models_to_try:
+    for model_name in PREFERRED_MODELS:
         try:
             response = client.chat.completions.create(
                 model=model_name,
@@ -403,11 +374,4 @@ def handle_message(request: UserInquiry):
 
 @app.get("/api/models")
 def list_groq_models():
-    client = get_groq_client()
-    if not client:
-        return {"error": "GROQ_API_KEY missing"}
-    try:
-        models = get_available_models(client)
-        return {"models": models}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"models": PREFERRED_MODELS}
