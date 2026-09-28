@@ -1,8 +1,10 @@
 fastapi
 uvicorn
 groq
-pydantic
 twilio
 python-dotenv
+pydantic
 aiofiles
 jinja2
+
+
